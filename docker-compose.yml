@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  zhipu-tts:
+    build: .
+    container_name: zhipu-tts-clone
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./voices.db:/app/voices.db
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
