@@ -337,82 +337,115 @@ def generate_local_tts(text, voice_id):
                 import win32com.client
                 import pythoncom
                 
-                pythoncom.CoInitialize()
+                print(f"[DEBUG] 尝试使用 win32com 方案")
+                
                 try:
-                    speaker = win32com.client.Dispatch("SAPI.SpVoice")
-                    
-                    # 设置语音
-                    voices = speaker.GetVoices()
-                    found_voice = None
-                    for i in range(voices.Count):
-                        v = voices.Item(i)
-                        v_desc = v.GetDescription()
-                        if voice.lower() in v_desc.lower():
-                            found_voice = v
-                            break
-                    
-                    if found_voice:
-                        speaker.Voice = found_voice
-                        print(f"[DEBUG] 找到语音: {found_voice.GetDescription()}")
-                    else:
-                        print(f"[WARNING] 未找到语音 {voice}，使用默认语音")
-                    
-                    # 创建临时WAV文件
-                    temp_wav = os.path.join(OUTPUT_DIR, f'temp_{int(time.time())}.wav')
-                    
-                    stream = win32com.client.Dispatch("SAPI.SpFileStream")
-                    stream.Format.Type = 3  # SPCAT_WAVEFORM
-                    stream.Open(temp_wav, 3)  # 3 = SSFMCreateForWrite
-                    speaker.AudioOutputStream = stream
-                    
-                    print(f"[DEBUG] 开始语音合成...")
-                    speaker.Speak(text)
-                    print(f"[DEBUG] 语音合成完成")
-                    
-                    stream.Close()
-                    
-                    # 验证并移动文件
-                    if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
-                        shutil.move(temp_wav, filepath)
-                        print(f"[DEBUG] WAV文件生成成功: {filepath}")
-                        return filename
-                    else:
-                        raise Exception(f'SAPI生成的音频文件无效或为空: {temp_wav}')
+                    pythoncom.CoInitialize()
+                    try:
+                        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                        print(f"[DEBUG] SAPI.SpVoice 创建成功")
                         
-                finally:
-                    pythoncom.CoUninitialize()
+                        # 设置语音
+                        voices = speaker.GetVoices()
+                        print(f"[DEBUG] 系统语音数量: {voices.Count}")
+                        
+                        found_voice = None
+                        for i in range(voices.Count):
+                            v = voices.Item(i)
+                            v_desc = v.GetDescription()
+                            v_name = v.VoiceInfo.Name if hasattr(v.VoiceInfo, 'Name') else v_desc
+                            print(f"[DEBUG] 可用语音 {i}: {v_desc}")
+                            
+                            # 尝试多种匹配方式
+                            if (voice.lower() in v_desc.lower() or 
+                                voice.lower() in v_name.lower() or
+                                voice.lower().replace('microsoft ', '') in v_name.lower()):
+                                found_voice = v
+                                break
+                        
+                        if found_voice:
+                            speaker.Voice = found_voice
+                            v_desc = found_voice.GetDescription()
+                            print(f"[DEBUG] 找到语音: {v_desc}")
+                        else:
+                            print(f"[WARNING] 未找到语音 {voice}，使用默认语音")
+                        
+                        # 创建临时WAV文件
+                        temp_wav = os.path.join(OUTPUT_DIR, f'temp_{int(time.time())}.wav')
+                        print(f"[DEBUG] 临时文件路径: {temp_wav}")
+                        
+                        stream = win32com.client.Dispatch("SAPI.SpFileStream")
+                        stream.Format.Type = 3  # SPCAT_WAVEFORM
+                        stream.Open(temp_wav, 3)  # 3 = SSFMCreateForWrite
+                        speaker.AudioOutputStream = stream
+                        
+                        print(f"[DEBUG] 开始语音合成...")
+                        speaker.Speak(text)
+                        print(f"[DEBUG] 语音合成完成")
+                        
+                        stream.Close()
+                        
+                        # 验证并移动文件
+                        if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
+                            shutil.move(temp_wav, filepath)
+                            print(f"[DEBUG] WAV文件生成成功: {filepath}")
+                            return filename
+                        else:
+                            raise Exception(f'SAPI生成的音频文件无效或为空: {temp_wav}')
+                            
+                    except Exception as sapi_error:
+                        print(f"[WARNING] win32com执行失败: {str(sapi_error)}，降级到PowerShell")
+                        # 继续执行PowerShell方案
+                        raise ImportError("win32com执行失败")
+                    finally:
+                        try:
+                            pythoncom.CoUninitialize()
+                        except:
+                            pass
+                        
+                except Exception as init_error:
+                    print(f"[WARNING] COM初始化失败: {str(init_error)}，降级到PowerShell")
+                    raise ImportError("COM初始化失败")
                     
             except ImportError:
                 # 降级到PowerShell方案
                 print(f"[DEBUG] win32com不可用，使用PowerShell方案")
                 
+                # 转义文件路径中的反斜杠
+                escaped_filepath = filepath.replace('\\', '\\\\')
+                
+                # 转义文本中的特殊字符
+                escaped_text = text.replace('"', '`"').replace("'", "`'")
+                
                 # PowerShell脚本 - 使用语音名称匹配
-                ps_script = f'''
+                ps_script = '''
                 Add-Type -AssemblyName System.Speech
                 $synthesizer = New-Object System.Speech.Synthesis.SpeechSynthesizer
                 
                 # 尝试选择指定语音
-                $targetVoice = "{voice}"
-                $selectedVoice = $synthesizer.GetInstalledVoices() | Where-Object {{ 
-                    $_.VoiceInfo.Name -like "*$targetVoice*"
-                }}
+                $targetVoice = "''' + voice + '''"
+                $selectedVoice = $synthesizer.GetInstalledVoices() | Where-Object { 
+                    $_.VoiceInfo.Name -like "*$targetVoice*" -or $_.VoiceInfo.Name -like "*$($targetVoice -replace 'Microsoft ','')*"
+                }
                 
-                if ($selectedVoice) {{
+                if ($selectedVoice) {
                     $synthesizer.SelectVoice($selectedVoice.VoiceInfo.Name)
                     Write-Host "使用语音: $($selectedVoice.VoiceInfo.Name)"
-                }} else {{
+                } else {
                     Write-Host "未找到语音 $targetVoice，使用默认语音"
-                }}
+                }
                 
                 # 设置输出格式并合成
-                $synthesizer.SetOutputToWaveFile("{filepath}")
-                $synthesizer.Speak("{text.Replace('"', '`"')}")
+                $synthesizer.SetOutputToWaveFile(''' + '"' + escaped_filepath + '"' + ''')
+                $synthesizer.Speak(''' + '"' + escaped_text + '"' + ''')
                 $synthesizer.Dispose()
                 '''
                 
+                print(f"[DEBUG] PowerShell脚本长度: {len(ps_script)}")
+                
                 result = subprocess.run(
                     ['powershell', '-ExecutionPolicy', 'Bypass', '-Command', ps_script],
-                    capture_output=True, text=True, timeout=60
+                    capture_output=True, text=True, timeout=60, encoding='utf-8'
                 )
                 
                 if result.returncode != 0:
