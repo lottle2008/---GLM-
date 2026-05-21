@@ -93,10 +93,10 @@ CREATE TABLE voices (
 
 **预设音色初始化：**
 ```python
-default_voices = [
-    ('klm', '康老师', '预设音色1'),
-    ('mld', '马老师', '预设音色2'),
-    ('zhaoxue', '赵雪', '预设音色3')
+DEFAULT_VOICES = [
+    ('ea6b9f99-3bba-5e15-bf81-153b72fe1c00', '预设-klm', '卡通1-内置音色'),
+    ('fedd5d14-f6e2-5968-a3d5-775b2428a886', '预设-mld', '卡通2-内置音色'),
+    ('526cf8ec-d3a4-5ce8-b591-46ebc2af70ea', '预设-zhaoxue', '赵老师-内置音色')
 ]
 ```
 
