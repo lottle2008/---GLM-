@@ -16,7 +16,7 @@ a = Analysis(
     pathex=[spec_dir],
     binaries=[],
     datas=[
-        (os.path.join(spec_dir, 'voices.db'), '.'),
+        # voices.db 不在打包范围内，由应用运行时自动创建
     ],
     hiddenimports=[
         'flask',

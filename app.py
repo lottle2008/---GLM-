@@ -32,19 +32,25 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 API_BASE_URL = 'https://open.bigmodel.cn/api'
 SYSTEM_VOICES = ['tongtong', 'chuichui', 'xiaochen', 'jam', 'kazi', 'douji', 'luodo']
 
+def get_app_data_dir():
+    """获取应用数据目录（跨平台）"""
+    if sys.platform == 'win32':
+        return os.path.join(os.environ.get('APPDATA', ''), 'ZhipuAudio')
+    elif sys.platform == 'darwin':
+        return os.path.join(os.path.expanduser('~'), 'Library', 'Application Support', 'ZhipuAudio')
+    else:
+        return os.path.join(os.path.expanduser('~'), '.ZhipuAudio')
+
 # 使用resource_path获取正确的路径（支持PyInstaller打包）
 BASE_DIR = os.path.dirname(resource_path('.'))
-OUTPUT_DIR = os.path.abspath(os.path.join(BASE_DIR, 'outputs'))
-DB_PATH = resource_path('voices.db')
+OUTPUT_DIR = os.path.join(get_app_data_dir(), 'outputs')
+DB_PATH = os.path.join(get_app_data_dir(), 'voices.db')
 
 # 确保输出目录存在
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
     
-# 确保数据库目录存在
-db_dir = os.path.dirname(DB_PATH)
-if db_dir and not os.path.exists(db_dir):
-    os.makedirs(db_dir)
+# 确保数据库目录存在（实际上已经由OUTPUT_DIR创建了）
 
 # 异步任务队列
 task_queue = Queue()
