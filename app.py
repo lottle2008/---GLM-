@@ -221,63 +221,112 @@ def delete_voice_from_db(voice_id):
         return False
 
 def generate_local_tts(text, voice_id):
-    """本地TTS合成"""
+    """本地TTS合成 - 严格对齐智谱官方7个标准音色"""
     import subprocess
     import shutil
+    
+    # 确保输出目录存在
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     filename = f'tts_{int(time.time())}.wav'
     filepath = os.path.join(OUTPUT_DIR, filename)
     
+    # 官方标准音色映射到系统语音
+    # 智谱官方7个音色：tongtong(彤彤)、xiaochen(小陈)、chuichui(锤锤)、jam(Jam)、kazi(Kazi)、douji(豆机)、luodo(罗多)
     if sys.platform == 'darwin':
+        # macOS系统语音映射
         voice_map = {
-            'tongtong': 'Ting-Ting',
-            'chuichui': 'Tingting',
-            'xiaochen': 'Chen Chen',
-            'jam': 'Alex',
-            'kazi': 'Kazuya',
-            'douji': '陪丸',
-            'luodo': 'LuoDuo'
+            'tongtong': 'Tingting',     # 彤彤 -> 婷婷(中文女声)
+            'xiaochen': 'Sinji',         # 小陈 -> 善怡(粤语,作为男声替代)
+            'chuichui': 'Samantha',     # 锤锤 -> Samantha(英文女声)
+            'jam': 'Alex',               # Jam -> Alex(英文男声)
+            'kazi': 'Kathy',             # Kazi -> Kathy(英文女声)
+            'douji': 'Tom',              # 豆机 -> Tom(英文男声)
+            'luodo': 'Meijia'            # 罗多 -> 美佳(台湾普通话女声)
         }
+        
         voice = voice_map.get(voice_id, 'Tingting')
         
         try:
+            print(f"[DEBUG] macOS TTS: voice_id={voice_id}, system_voice={voice}, text_length={len(text)}")
+            
             aiff_path = filepath.replace('.wav', '.aiff')
             
-            say_cmd = ['say', '-v', voice, '-o', aiff_path, '--']
-            if isinstance(text, str) and not text.isascii():
-                say_cmd.extend(['--data-format=LEI16@22050'])
+            # 构建say命令 - macOS say命令格式: say -v <voice> -o <output.aiff> <text>
+            say_cmd = ['say', '-v', voice, '-o', aiff_path, text]
             
+            print(f"[DEBUG] 执行命令: {' '.join(say_cmd)}")
+            
+            # 执行say命令
             result = subprocess.run(say_cmd, capture_output=True, text=True)
+            
             if result.returncode != 0:
-                say_cmd = ['say', '-v', voice, text]
-                subprocess.run(say_cmd, check=True, capture_output=True)
-                aiff_path = '/tmp/temp_tts_output.aiff'
-                subprocess.run(['say', '-v', voice, '-o', aiff_path, '--', text], check=True, capture_output=True)
+                error_msg = result.stderr or result.stdout
+                print(f"[ERROR] say命令失败: {error_msg}")
+                
+                # 尝试不带输出文件的方式测试语音是否可用
+                test_result = subprocess.run(['say', '-v', voice, '测试'], capture_output=True, text=True)
+                if test_result.returncode != 0:
+                    # 语音不可用，降级到默认语音
+                    print(f"[WARNING] 语音 {voice} 不可用，降级到 Tingting")
+                    voice = 'Tingting'
+                    say_cmd = ['say', '-v', voice, '-o', aiff_path, text]
+                    result = subprocess.run(say_cmd, capture_output=True, text=True)
             
-            if os.path.exists(aiff_path):
-                result = subprocess.run(
-                    ['afconvert', '-f', 'WAVE', '-d', 'LEI16@22050', aiff_path, filepath],
-                    capture_output=True, text=True
-                )
-                if result.returncode != 0:
-                    shutil.copy(aiff_path, filepath)
-                try:
-                    os.remove(aiff_path)
-                except:
-                    pass
+            # 检查AIFF文件是否生成成功
+            if not os.path.exists(aiff_path) or os.path.getsize(aiff_path) == 0:
+                raise Exception(f"AIFF文件生成失败: {aiff_path}")
             
+            print(f"[DEBUG] AIFF文件生成成功: {aiff_path}")
+            
+            # 使用afconvert转换为WAV格式
+            afconvert_cmd = ['afconvert', '-f', 'WAVE', '-d', 'LEI16@22050', aiff_path, filepath]
+            result = subprocess.run(afconvert_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"[WARNING] afconvert转换失败，直接复制AIFF文件")
+                shutil.copy(aiff_path, filepath)
+            
+            # 删除临时AIFF文件
+            try:
+                os.remove(aiff_path)
+            except Exception as e:
+                print(f"[WARNING] 删除临时文件失败: {e}")
+            
+            # 验证最终WAV文件
             if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
-                raise Exception('音频文件生成失败')
+                raise Exception(f"WAV文件生成失败或为空: {filepath}")
             
+            print(f"[DEBUG] WAV文件生成成功: {filepath}")
             return filename
+            
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
+            print(f"[ERROR] subprocess调用失败: {error_msg}")
             raise Exception(f'系统语音生成失败: {error_msg}')
         except Exception as e:
+            print(f"[ERROR] 系统语音生成异常: {str(e)}")
             raise Exception(f'系统语音生成失败: {str(e)}')
     
     elif sys.platform == 'win32':
+        # Windows系统语音映射
+        # Windows SAPI支持的中文语音: 微软慧慧, 微软晓晓, 微软小云, 微软小娜等
+        voice_map = {
+            'tongtong': 'Microsoft Huihui',     # 彤彤 -> 微软慧慧(中文女声)
+            'xiaochen': 'Microsoft Yunyang',    # 小陈 -> 微软云扬(中文男声)
+            'chuichui': 'Microsoft Zira',       # 锤锤 -> Zira(英文女声)
+            'jam': 'Microsoft David',           # Jam -> David(英文男声)
+            'kazi': 'Microsoft Hazel',          # Kazi -> Hazel(英文女声)
+            'douji': 'Microsoft George',        # 豆机 -> George(英文男声)
+            'luodo': 'Microsoft Xiaoxiao'       # 罗多 -> 微软晓晓(中文女声)
+        }
+        
+        voice = voice_map.get(voice_id, 'Microsoft Huihui')
+        
         try:
+            print(f"[DEBUG] Windows TTS: voice_id={voice_id}, system_voice={voice}, text_length={len(text)}")
+            
+            # 优先使用win32com
             try:
                 import win32com.client
                 import pythoncom
@@ -286,43 +335,98 @@ def generate_local_tts(text, voice_id):
                 try:
                     speaker = win32com.client.Dispatch("SAPI.SpVoice")
                     
+                    # 设置语音
+                    voices = speaker.GetVoices()
+                    found_voice = None
+                    for i in range(voices.Count):
+                        v = voices.Item(i)
+                        v_desc = v.GetDescription()
+                        if voice.lower() in v_desc.lower():
+                            found_voice = v
+                            break
+                    
+                    if found_voice:
+                        speaker.Voice = found_voice
+                        print(f"[DEBUG] 找到语音: {found_voice.GetDescription()}")
+                    else:
+                        print(f"[WARNING] 未找到语音 {voice}，使用默认语音")
+                    
+                    # 创建临时WAV文件
                     temp_wav = os.path.join(OUTPUT_DIR, f'temp_{int(time.time())}.wav')
+                    
                     stream = win32com.client.Dispatch("SAPI.SpFileStream")
-                    stream.Open(temp_wav, 3)
+                    stream.Format.Type = 3  # SPCAT_WAVEFORM
+                    stream.Open(temp_wav, 3)  # 3 = SSFMCreateForWrite
                     speaker.AudioOutputStream = stream
+                    
+                    print(f"[DEBUG] 开始语音合成...")
                     speaker.Speak(text)
+                    print(f"[DEBUG] 语音合成完成")
+                    
                     stream.Close()
                     
+                    # 验证并移动文件
                     if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
                         shutil.move(temp_wav, filepath)
+                        print(f"[DEBUG] WAV文件生成成功: {filepath}")
+                        return filename
                     else:
-                        raise Exception('SAPI生成的音频文件无效')
-                    
-                    return filename
+                        raise Exception(f'SAPI生成的音频文件无效或为空: {temp_wav}')
+                        
                 finally:
                     pythoncom.CoUninitialize()
+                    
             except ImportError:
-                escaped_text = text.replace("'", "''").replace('"', '`"')
+                # 降级到PowerShell方案
+                print(f"[DEBUG] win32com不可用，使用PowerShell方案")
+                
+                # PowerShell脚本 - 使用语音名称匹配
                 ps_script = f'''
                 Add-Type -AssemblyName System.Speech
                 $synthesizer = New-Object System.Speech.Synthesis.SpeechSynthesizer
+                
+                # 尝试选择指定语音
+                $targetVoice = "{voice}"
+                $selectedVoice = $synthesizer.GetInstalledVoices() | Where-Object {{ 
+                    $_.VoiceInfo.Name -like "*$targetVoice*"
+                }}
+                
+                if ($selectedVoice) {{
+                    $synthesizer.SelectVoice($selectedVoice.VoiceInfo.Name)
+                    Write-Host "使用语音: $($selectedVoice.VoiceInfo.Name)"
+                }} else {{
+                    Write-Host "未找到语音 $targetVoice，使用默认语音"
+                }}
+                
+                # 设置输出格式并合成
                 $synthesizer.SetOutputToWaveFile("{filepath}")
-                $synthesizer.Speak("{escaped_text}")
+                $synthesizer.Speak("{text.Replace('"', '`"')}")
                 $synthesizer.Dispose()
                 '''
+                
                 result = subprocess.run(
                     ['powershell', '-ExecutionPolicy', 'Bypass', '-Command', ps_script],
-                    capture_output=True, text=True, timeout=30
+                    capture_output=True, text=True, timeout=60
                 )
-                if result.returncode != 0 or not os.path.exists(filepath):
-                    error_msg = result.stderr or result.stdout
+                
+                if result.returncode != 0:
+                    error_msg = result.stderr.decode('utf-8', errors='ignore') or result.stdout
+                    print(f"[ERROR] PowerShell TTS失败: {error_msg}")
                     raise Exception(f'PowerShell TTS失败: {error_msg}')
+                
+                if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+                    raise Exception(f'PowerShell生成的音频文件无效或为空')
+                
+                print(f"[DEBUG] PowerShell WAV文件生成成功: {filepath}")
                 return filename
-        except ImportError:
-            raise Exception('系统语音需要win32com模块，请运行: pip install pywin32')
+                
         except Exception as e:
+            print(f"[ERROR] Windows TTS异常: {str(e)}")
             raise Exception(f'系统语音生成失败: {str(e)}')
+    
     else:
+        # Linux或其他系统
+        print(f"[ERROR] 不支持的操作系统: {sys.platform}")
         raise Exception(f'不支持的操作系统: {sys.platform}')
 
 def call_chatglm_api(api_key, prompt):
