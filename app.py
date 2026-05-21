@@ -50,6 +50,13 @@ if db_dir and not os.path.exists(db_dir):
 task_queue = Queue()
 task_results = {}
 
+# 内置预设音色（用户已克隆好的真实音色ID）
+DEFAULT_VOICES = [
+    ('ea6b9f99-3bba-5e15-bf81-153b72fe1c00', '预设-klm', '康老师-内置音色'),
+    ('fedd5d14-f6e2-5968-a3d5-775b2428a886', '预设-mld', '马老师-内置音色'),
+    ('526cf8ec-d3a4-5ce8-b591-46ebc2af70ea', '预设-zhaoxue', '赵雪-内置音色')
+]
+
 def init_db():
     """初始化SQLite数据库"""
     conn = sqlite3.connect(DB_PATH)
@@ -65,13 +72,7 @@ def init_db():
         )
     ''')
     
-    default_voices = [
-        ('klm', '康老师', '预设音色1'),
-        ('mld', '马老师', '预设音色2'),
-        ('zhaoxue', '赵雪', '预设音色3')
-    ]
-    
-    for voice_id, name, remark in default_voices:
+    for voice_id, name, remark in DEFAULT_VOICES:
         cursor.execute('''
             INSERT OR IGNORE INTO voices (voice_id, name, remark, created_at)
             VALUES (?, ?, ?, ?)
@@ -97,24 +98,41 @@ def save_voice_to_db(voice_id, name='', remark=''):
         return False
 
 def get_voices_from_db(search='', page=1, per_page=10, sort_by='created_at', sort_order='desc'):
-    """从数据库获取音色列表，支持搜索、分页、排序"""
+    """从数据库获取音色列表，支持搜索、分页、排序
+    内置预设音色始终在最前面，其他音色按时间倒序
+    """
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
+        # 内置预设音色ID列表
+        default_voice_ids = [v[0] for v in DEFAULT_VOICES]
+        
+        # 构建查询
         query = 'SELECT id, voice_id, name, remark, created_at, usage_count FROM voices'
+        count_query = 'SELECT COUNT(*) FROM voices'
         params = []
         
         if search:
-            query += ' WHERE voice_id LIKE ? OR name LIKE ? OR remark LIKE ?'
+            query = '''SELECT id, voice_id, name, remark, created_at, usage_count FROM voices
+                      WHERE voice_id LIKE ? OR name LIKE ? OR remark LIKE ?'''
+            count_query = '''SELECT COUNT(*) FROM voices
+                            WHERE voice_id LIKE ? OR name LIKE ? OR remark LIKE ?'''
             params.extend([f'%{search}%', f'%{search}%', f'%{search}%'])
         
-        valid_sort = ['created_at', 'name', 'usage_count']
-        if sort_by not in valid_sort:
-            sort_by = 'created_at'
-        
-        sort_order = 'DESC' if sort_order == 'desc' else 'ASC'
-        query += f' ORDER BY {sort_by} {sort_order}'
+        # 排序：内置预设音色优先，其他按时间倒序
+        if sort_by == 'created_at' and sort_order == 'desc':
+            query += ''' ORDER BY 
+                CASE WHEN voice_id IN ({}) THEN 0 ELSE 1 END,
+                created_at DESC
+            '''.format(','.join(['?' for _ in default_voice_ids]))
+            params.extend(default_voice_ids)
+        else:
+            valid_sort = ['created_at', 'name', 'usage_count']
+            if sort_by not in valid_sort:
+                sort_by = 'created_at'
+            sort_order = 'DESC' if sort_order == 'desc' else 'ASC'
+            query += f' ORDER BY {sort_by} {sort_order}'
         
         offset = (page - 1) * per_page
         query += ' LIMIT ? OFFSET ?'
@@ -123,8 +141,9 @@ def get_voices_from_db(search='', page=1, per_page=10, sort_by='created_at', sor
         cursor.execute(query, params)
         rows = cursor.fetchall()
         
-        cursor.execute('SELECT COUNT(*) FROM voices' + (' WHERE voice_id LIKE ? OR name LIKE ? OR remark LIKE ?' if search else ''), 
-                      params[:-2] if search else [])
+        # 获取总数
+        count_params = params[:-2] if search else []
+        cursor.execute(count_query, count_params if search else [])
         total = cursor.fetchone()[0]
         
         conn.close()
@@ -143,7 +162,7 @@ def get_voices_from_db(search='', page=1, per_page=10, sort_by='created_at', sor
             'total': total,
             'page': page,
             'per_page': per_page,
-            'total_pages': (total + per_page - 1) // per_page
+            'total_pages': (total + per_page - 1) // per_page if total > 0 else 0
         }
     except Exception as e:
         print(f'获取音色列表失败: {str(e)}')
@@ -204,54 +223,103 @@ def delete_voice_from_db(voice_id):
 def generate_local_tts(text, voice_id):
     """本地TTS合成"""
     import subprocess
+    import shutil
+    
     filename = f'tts_{int(time.time())}.wav'
     filepath = os.path.join(OUTPUT_DIR, filename)
     
     if sys.platform == 'darwin':
         voice_map = {
-            'tongtong': 'Tingting',
-            'chuichui': 'Samantha',
-            'xiaochen': 'Sinji',
+            'tongtong': 'Ting-Ting',
+            'chuichui': 'Tingting',
+            'xiaochen': 'Chen Chen',
             'jam': 'Alex',
-            'kazi': 'Kathy',
-            'douji': 'Tom',
-            'luodo': 'Meijia'
+            'kazi': 'Kazuya',
+            'douji': '陪丸',
+            'luodo': 'LuoDuo'
         }
         voice = voice_map.get(voice_id, 'Tingting')
+        
         try:
             aiff_path = filepath.replace('.wav', '.aiff')
-            subprocess.run(['say', '-v', voice, '-o', aiff_path, text], 
-                         check=True, capture_output=True)
-            subprocess.run(['afconvert', '-f', 'WAVE', '-d', 'LEI16@22050', aiff_path, filepath],
-                         check=True, capture_output=True)
-            os.remove(aiff_path)
+            
+            say_cmd = ['say', '-v', voice, '-o', aiff_path, '--']
+            if isinstance(text, str) and not text.isascii():
+                say_cmd.extend(['--data-format=LEI16@22050'])
+            
+            result = subprocess.run(say_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                say_cmd = ['say', '-v', voice, text]
+                subprocess.run(say_cmd, check=True, capture_output=True)
+                aiff_path = '/tmp/temp_tts_output.aiff'
+                subprocess.run(['say', '-v', voice, '-o', aiff_path, '--', text], check=True, capture_output=True)
+            
+            if os.path.exists(aiff_path):
+                result = subprocess.run(
+                    ['afconvert', '-f', 'WAVE', '-d', 'LEI16@22050', aiff_path, filepath],
+                    capture_output=True, text=True
+                )
+                if result.returncode != 0:
+                    shutil.copy(aiff_path, filepath)
+                try:
+                    os.remove(aiff_path)
+                except:
+                    pass
+            
+            if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+                raise Exception('音频文件生成失败')
+            
             return filename
         except subprocess.CalledProcessError as e:
-            raise Exception(f'系统语音生成失败: {e.stderr.decode("utf-8", errors="ignore")}')
+            error_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
+            raise Exception(f'系统语音生成失败: {error_msg}')
+        except Exception as e:
+            raise Exception(f'系统语音生成失败: {str(e)}')
+    
     elif sys.platform == 'win32':
         try:
             try:
                 import win32com.client
-                speaker = win32com.client.Dispatch("SAPI.SpVoice")
-                stream = win32com.client.Dispatch("SAPI.SpFileStream")
-                stream.Open(filepath, 3)
-                speaker.AudioOutputStream = stream
-                speaker.Speak(text)
-                stream.Close()
-                return filename
+                import pythoncom
+                
+                pythoncom.CoInitialize()
+                try:
+                    speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                    
+                    temp_wav = os.path.join(OUTPUT_DIR, f'temp_{int(time.time())}.wav')
+                    stream = win32com.client.Dispatch("SAPI.SpFileStream")
+                    stream.Open(temp_wav, 3)
+                    speaker.AudioOutputStream = stream
+                    speaker.Speak(text)
+                    stream.Close()
+                    
+                    if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
+                        shutil.move(temp_wav, filepath)
+                    else:
+                        raise Exception('SAPI生成的音频文件无效')
+                    
+                    return filename
+                finally:
+                    pythoncom.CoUninitialize()
             except ImportError:
-                ps_script = f"""
+                escaped_text = text.replace("'", "''").replace('"', '`"')
+                ps_script = f'''
                 Add-Type -AssemblyName System.Speech
-                $speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
-                $speaker.SetOutputToWaveFile('{filepath}')
-                $speaker.Speak('{text.replace("'", "''")}')
-                $speaker.Dispose()
-                """
-                result = subprocess.run(['powershell', '-Command', ps_script], 
-                                     capture_output=True, text=True)
-                if result.returncode != 0:
-                    raise Exception(f'PowerShell错误: {result.stderr}')
+                $synthesizer = New-Object System.Speech.Synthesis.SpeechSynthesizer
+                $synthesizer.SetOutputToWaveFile("{filepath}")
+                $synthesizer.Speak("{escaped_text}")
+                $synthesizer.Dispose()
+                '''
+                result = subprocess.run(
+                    ['powershell', '-ExecutionPolicy', 'Bypass', '-Command', ps_script],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode != 0 or not os.path.exists(filepath):
+                    error_msg = result.stderr or result.stdout
+                    raise Exception(f'PowerShell TTS失败: {error_msg}')
                 return filename
+        except ImportError:
+            raise Exception('系统语音需要win32com模块，请运行: pip install pywin32')
         except Exception as e:
             raise Exception(f'系统语音生成失败: {str(e)}')
     else:
@@ -1237,6 +1305,8 @@ HTML_TEMPLATE = """
                         player.src = '/api/outputs/' + taskResult.filename;
                         player.style.display = 'block';
                         player.play();
+                        
+                        loadVoices(1);
                         
                         if (taskResult.voice_id) {
                             pendingVoiceId = taskResult.voice_id;
