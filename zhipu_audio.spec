@@ -44,6 +44,10 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # Windows 配置
 if sys.platform == 'win32':
+    # 设置图标（如果存在）
+    icon_path = os.path.join(spec_dir, 'app.ico')
+    icon_param = icon_path if os.path.exists(icon_path) else None
+    
     exe = EXE(
         pyz,
         a.scripts,
@@ -64,7 +68,7 @@ if sys.platform == 'win32':
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
-        icon='app.ico'  # 需要准备一个图标文件
+        icon=icon_param  # 图标文件可选
     )
 else:
     # Mac 配置
